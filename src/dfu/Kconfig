@@ -1,0 +1,33 @@
+config APP_DFU
+	bool "OTA / DFU image confirmation and upload hooks"
+	default y
+	depends on MCUMGR_GRP_IMG && BOOTLOADER_MCUBOOT
+	help
+	  Housekeeping around MCUboot image updates delivered over SMP: log the
+	  running image version, confirm a freshly swapped-in image once it has
+	  proven it can run, and quiesce Channel Sounding while an upload is in
+	  flight. The manual slot commands come from Zephyr's MCUBOOT_SHELL.
+
+if APP_DFU
+
+config APP_DFU_CONFIRM_DELAY_S
+	int "Self-confirm delay for a test image (seconds)"
+	default 10
+	range 0 300
+	help
+	  How long a newly swapped-in (unconfirmed) image must keep running
+	  before it marks itself confirmed. A crash, fault or watchdog reset
+	  before this deadline leaves the image unconfirmed, so MCUboot reverts
+	  to the previous one on the next boot. Set to 0 to confirm immediately
+	  (no revert protection).
+
+config APP_DFU_PAUSE_CS
+	bool "Stop Channel Sounding while an image upload is in progress"
+	default y
+	depends on APP_CS
+	help
+	  Writing the incoming image into RRAM stalls the CPU in bursts, which
+	  disturbs Channel Sounding subevent timing. Stop ranging when an upload
+	  starts; the device reboots into the new image when it completes.
+
+endif # APP_DFU

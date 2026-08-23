@@ -1,0 +1,57 @@
+# Build check: keep main and every PR buildable, so breakage surfaces before a
+# release tag is cut (release.yml runs the same composite action).
+name: Build
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# A newer push to the same branch/PR makes an in-flight build pointless.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    # NB: this image is published for linux/amd64 only — keep this job on an
+    # x86 runner label.
+    # The nRF Connect SDK toolchain image, pinned to the SDK revision west.yml
+    # tracks. It ships the toolchain only — the SDK sources come from `west
+    # update` in the composite action below. J-Link is deliberately not
+    # installed (ACCEPT_JLINK_LICENSE unset); nothing is flashed here.
+    container:
+      image: ghcr.io/nrfconnect/sdk-nrf-toolchain:v3.4.0
+
+    # Required: the image exposes the toolchain through
+    # BASH_ENV=/opt/non-interactive-setup.sh, so a non-bash shell gets no
+    # compilers on PATH.
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      # Checked out under the path west.yml declares as `self:`.
+      - uses: actions/checkout@v5
+        with:
+          path: nRF54L15TagDemo
+
+      - uses: ./nRF54L15TagDemo/.github/actions/ncs-build
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ github.sha }}
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            build/merged_nrf54l15tag_nrf54l15_cpuapp.hex
+            build/dfu_application.zip
+            build/nRF54L15TagDemo/zephyr/zephyr.signed.bin
+            build/nRF54L15TagDemo/zephyr/zephyr.elf
+            build/mcuboot/zephyr/zephyr.hex

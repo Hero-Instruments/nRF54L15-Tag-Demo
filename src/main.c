@@ -13,6 +13,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
+#include "dfu/dfu.h"
 #include "sensors/sensors.h"
 #include "ble/ble_core.h"
 #include "ble/adv.h"
@@ -28,6 +29,14 @@ int main(void)
 	int err;
 
 	LOG_INF("nRF54L15 Tag Demo starting");
+
+	/* First: report the running image and arm the MCUboot self-confirm timer
+	 * so a bad update reverts even if a later init step hangs.
+	 */
+	err = dfu_init();
+	if (err) {
+		LOG_ERR("dfu_init failed (%d)", err);
+	}
 
 	err = sensors_init();
 	if (err) {

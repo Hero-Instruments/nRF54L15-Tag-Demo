@@ -1,0 +1,62 @@
+name: Build the nRF54L15 Tag firmware
+description: >-
+  Set up a west workspace from this repo's manifest and build the application
+  (MCUboot + signed app). Must run inside the nRF Connect SDK toolchain
+  container with bash as the default shell — a composite action cannot declare
+  `container:` itself, so the calling workflow owns that part.
+
+inputs:
+  app-path:
+    description: >-
+      Directory the repo is checked out into. Must match `self: path:` in
+      west.yml, or `west init -l` will refuse the manifest.
+    required: false
+    default: nRF54L15TagDemo
+  board:
+    description: Board target to build for.
+    required: false
+    default: nrf54l15tag/nrf54l15/cpuapp
+  snippet:
+    description: >-
+      Zephyr snippet(s). `rtt-console` is mandatory on this board — it has no
+      UART, so without it the firmware has no console, log or shell.
+    required: false
+    default: rtt-console
+  build-dir:
+    description: Build directory, relative to the workspace root.
+    required: false
+    default: build
+
+runs:
+  using: composite
+  steps:
+    # The container runs as root over a checkout it did not create; without
+    # this, git (and therefore west) treats every repo as unsafe.
+    - name: Mark checkouts as safe for git
+      shell: bash
+      run: git config --global --add safe.directory '*'
+
+    # T2 topology: this repo is the manifest repo, so initialise the workspace
+    # locally from it rather than cloning a manifest.
+    - name: Initialise the west workspace
+      shell: bash
+      run: west init -l "${{ inputs.app-path }}"
+
+    # --narrow -o=--depth=1 shallow-clones only the allow-listed SDK modules
+    # (see the comment block in west.yml).
+    - name: Fetch the SDK modules
+      shell: bash
+      run: west update --narrow -o=--depth=1
+
+    - name: Report the resolved SDK revisions
+      shell: bash
+      run: west list -f '{name:16} {revision:12} {path}'
+
+    - name: Build
+      shell: bash
+      run: |
+        west build \
+          -b "${{ inputs.board }}" \
+          -S "${{ inputs.snippet }}" \
+          -d "${{ inputs.build-dir }}" \
+          "${{ inputs.app-path }}"

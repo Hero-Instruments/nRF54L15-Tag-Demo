@@ -9,6 +9,7 @@ rsource "src/ess/Kconfig"
 rsource "src/motion/Kconfig"
 rsource "src/ux/Kconfig"
 rsource "src/control/Kconfig"
+rsource "src/dfu/Kconfig"
 
 endmenu
 

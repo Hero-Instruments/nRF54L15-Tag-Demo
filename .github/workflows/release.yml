@@ -1,0 +1,123 @@
+# Pushing a vX.Y.Z tag builds the firmware and publishes it as a GitHub Release,
+# so every artifact anyone flashes or uploads is traceable to a commit.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    # NB: this image is published for linux/amd64 only — keep this job on an
+    # x86 runner label.
+    # Same toolchain image and bash requirement as build.yml — see the comments
+    # there for why both are needed.
+    container:
+      image: ghcr.io/nrfconnect/sdk-nrf-toolchain:v3.4.0
+
+    defaults:
+      run:
+        shell: bash
+
+    outputs:
+      prerelease: ${{ steps.version.outputs.prerelease }}
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: nRF54L15TagDemo
+
+      # VERSION is the single source of truth for the image header, so a tag
+      # that disagrees with it would ship an image whose version contradicts
+      # its release name. Fail before spending a build on it.
+      - name: Check the tag against VERSION
+        id: version
+        run: |
+          set -euo pipefail
+
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"          # v1.0.1-rc1 -> 1.0.1-rc1
+          base="${version%%-*}"       # 1.0.1-rc1  -> 1.0.1
+
+          if ! [[ "${base}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag '${tag}' is not vMAJOR.MINOR.PATCH[-suffix]"
+            exit 1
+          fi
+
+          file="nRF54L15TagDemo/VERSION"
+          field() {
+            sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p" "${file}"
+          }
+          file_version="$(field VERSION_MAJOR).$(field VERSION_MINOR).$(field PATCHLEVEL)"
+
+          if [ "${base}" != "${file_version}" ]; then
+            echo "::error::tag ${tag} (version ${base}) does not match ${file} (${file_version}); bump VERSION and re-tag"
+            exit 1
+          fi
+
+          # A suffix such as -rc1 marks the release as a pre-release.
+          prerelease=false
+          [ "${version}" != "${base}" ] && prerelease=true
+
+          echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
+          echo "Releasing ${tag} (image version ${file_version}, prerelease=${prerelease})"
+
+      - uses: ./nRF54L15TagDemo/.github/actions/ncs-build
+
+      - name: Stage the release assets
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          mkdir -p release
+
+          # Factory image for a blank tag over J-Link (MCUboot + signed app).
+          cp build/merged_nrf54l15tag_nrf54l15_cpuapp.hex   "release/nrf54l15tag-${tag}-factory.hex"
+          # OTA payloads: raw signed image, and the packaged form nRF Util and
+          # nRF Connect Device Manager prefer.
+          cp build/nRF54L15TagDemo/zephyr/zephyr.signed.bin "release/nrf54l15tag-${tag}-ota.bin"
+          cp build/dfu_application.zip                      "release/nrf54l15tag-${tag}-dfu.zip"
+          # Debug: standalone bootloader, and symbols for decoding a crash
+          # reported against this exact release.
+          cp build/mcuboot/zephyr/zephyr.hex                "release/nrf54l15tag-${tag}-mcuboot.hex"
+          cp build/nRF54L15TagDemo/zephyr/zephyr.elf        "release/nrf54l15tag-${tag}.elf"
+
+          cd release
+          sha256sum nrf54l15tag-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Upload the staged assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          retention-days: 7
+          if-no-files-found: error
+          path: release
+
+  # Runs outside the toolchain container: that image has no `gh`, while the
+  # stock runner image does. Also keeps write permission off the build job.
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: release
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          args=(--generate-notes --verify-tag --title "${GITHUB_REF_NAME}")
+          [ "${PRERELEASE}" = "true" ] && args+=(--prerelease)
+          gh release create "${GITHUB_REF_NAME}" "${args[@]}" release/*

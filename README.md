@@ -22,6 +22,9 @@ services. Built on the nRF Connect SDK **v3.4.0**.
 - **RTT shell** — runtime control of roles, ranging, sensors, and logging.
 - **Remote shell over BLE** — the same shell commands are reachable via
   MCUmgr/SMP over Bluetooth (nRF Connect Device Manager or the `mcumgr` CLI).
+- **OTA firmware update** — MCUboot bootloader with dual image slots; a signed
+  image is uploaded over the same SMP-over-BLE link, and the tag self-confirms
+  the new image or automatically reverts if it fails to run.
 - **Initiator doubles as a peripheral** — while ranging (as a BLE *central* to the
   reflector) the initiator also advertises and accepts a second link from a
   screen/phone/SMP host (`BT_MAX_CONN=2`). A `cs distance` shell command lets that
@@ -67,10 +70,13 @@ module under `src/` with its own `CMakeLists.txt` and `Kconfig`, toggled by a
 | `src/motion/` | `APP_MOTION` | Custom Motion Service (accel/gyro notify + config char) |
 | `src/ux/` | `APP_UX` | Button role-cycling + RGB-LED role/distance indication |
 | `src/control/` | `APP_CONTROL` | RTT shell commands |
+| `src/dfu/` | `APP_DFU` | OTA image confirm/revert policy + quiesces CS during an upload |
 
 Top-level: `CMakeLists.txt`, `Kconfig`, `prj.conf`, `Kconfig.sysbuild`,
-`boards/nrf54l15tag_nrf54l15_cpuapp.{overlay,conf}`, `sysbuild/`, and
-`docs/MOTION_SERVICE.md` (client-facing Motion protocol spec).
+`sysbuild.conf` (enables MCUboot), `VERSION` (stamps the signed image),
+`boards/nrf54l15tag_nrf54l15_cpuapp.{overlay,conf}`, `sysbuild/` (MCUboot and
+IPC-radio image configs), and `docs/MOTION_SERVICE.md` (client-facing Motion
+protocol spec).
 
 ## Building
 
@@ -78,6 +84,11 @@ Built with the **nRF Connect for VS Code** extension (NCS v3.4.0): board target
 `nrf54l15tag/nrf54l15/cpuapp` with the **`rtt-console`** snippet enabled (all
 console/log/shell I/O is over SEGGER RTT — open an RTT terminal to interact).
 Build output directories (`build*/`) are gitignored.
+
+This is a **sysbuild** build producing two images — MCUboot and the signed
+application (see [Firmware update over BLE (OTA)](#firmware-update-over-ble-ota)).
+`west flash` programs both; `merged_nrf54l15tag_nrf54l15_cpuapp.hex` in the build
+directory is the equivalent single-file image.
 
 ### Workspace setup (west)
 
@@ -92,6 +103,9 @@ west update --narrow -o=--depth=1     # shallow-clone the allow-listed SDK modul
 west build -b nrf54l15tag/nrf54l15/cpuapp -S rtt-console nRF54L15TagDemo
 west flash
 ```
+
+The allow-list includes `mcuboot` — the bootloader is part of the build, so
+removing it would break OTA support.
 
 The manifest uses an `import` allow-list to pull only the SDK modules this
 application needs (~2.8 GB working tree vs the full ~4.6 GB NCS); `--narrow
@@ -212,6 +226,121 @@ starts ranging automatically.
   it shortens the window to track quickly. `sensor status` shows the current
   stationary/moving state.
 
+## Firmware update over BLE (OTA)
+
+The build includes **MCUboot** as a first-stage bootloader (enabled in
+[sysbuild.conf](sysbuild.conf)), so the application can be replaced over the same
+SMP-over-Bluetooth link used for the remote shell — no J-Link needed after the
+first flash.
+
+### Memory layout
+
+Partitions come from devicetree (the SoC's `nrf54l15_cpuapp_partition.dtsi`; no
+Partition Manager). MCUboot runs in **swap-using-move** mode: the new image is
+uploaded into slot1 and swapped into slot0 on the next reset.
+
+| Partition | Address | Size | Contents |
+|-----------|---------|------|----------|
+| `boot_partition` | `0x0` | 62 K | MCUboot (currently ~51 K used) |
+| `slot0_partition` | `0x10000` | 712 K | running application (currently ~443 K used) |
+| `slot1_partition` | `0xc2000` | 712 K | upload target for the new image |
+| `storage_partition` | `0x174000` | 36 K | unused by this app |
+
+### Artifacts
+
+| File (under `build/`) | Use |
+|-----------------------|-----|
+| `merged_nrf54l15tag_nrf54l15_cpuapp.hex` | first-time / factory flash over J-Link (MCUboot + app) |
+| `nRF54L15TagDemo/zephyr/zephyr.signed.bin` | **the OTA payload** — upload this |
+| `dfu_application.zip` | same image packaged for nRF Connect Device Manager / nRF Util |
+
+Tagged builds publish these same files as **GitHub Release** assets, so you don't
+have to build locally to get them:
+
+| Release asset | Build output it comes from |
+|---------------|----------------------------|
+| `nrf54l15tag-<tag>-factory.hex` | `merged_nrf54l15tag_nrf54l15_cpuapp.hex` |
+| `nrf54l15tag-<tag>-ota.bin` | `zephyr.signed.bin` |
+| `nrf54l15tag-<tag>-dfu.zip` | `dfu_application.zip` |
+| `nrf54l15tag-<tag>-mcuboot.hex` | `mcuboot/zephyr/zephyr.hex` (bootloader alone) |
+| `nrf54l15tag-<tag>.elf` | `zephyr.elf` — symbols, for decoding a crash from that release |
+| `SHA256SUMS.txt` | checksums of the above |
+
+### Releases (CI)
+
+[`.github/workflows/release.yml`](.github/workflows/release.yml) builds and publishes a
+release on every `v*` tag; [`build.yml`](.github/workflows/build.yml) builds every PR and
+push to `main` so breakage shows up before you tag. Both build inside Nordic's
+`ghcr.io/nrfconnect/sdk-nrf-toolchain:v3.4.0` container and set up the workspace from
+[west.yml](west.yml), sharing the steps in
+[`.github/actions/ncs-build`](.github/actions/ncs-build/action.yml).
+
+To cut a release:
+
+```sh
+# 1. bump VERSION (this stamps the MCUboot image header)
+$EDITOR VERSION
+git commit -am "release 1.0.1"
+# 2. tag and push
+git tag v1.0.1
+git push origin main --tags
+```
+
+The tag must agree with [VERSION](VERSION) — `v1.0.1` requires
+`VERSION_MAJOR/MINOR/PATCHLEVEL = 1/0/1`. The workflow checks this and **fails on
+mismatch** rather than publishing a release whose image header contradicts its name. A
+suffixed tag (`v1.0.1-rc1`) is allowed against the same `VERSION` and is marked as a
+**pre-release**.
+
+> Release assets are signed with MCUboot's public development key, so a downloaded
+> asset is *not* a trusted image — see [Security](#security) below.
+
+Bump [VERSION](VERSION) before building an update; the version is written into
+the image header, shown by `mcuboot` / `mcumgr image list`, and logged at boot.
+
+### Updating a tag
+
+From the nRF Connect **Device Manager** app (Android/iOS): connect to
+`nRF54L15 Tag` → **Images** → select `zephyr.signed.bin` (or the `.zip`) →
+**Test**. The tag resets, MCUboot swaps the image in, and the new firmware boots.
+
+Or with the `mcumgr` CLI:
+
+```sh
+mcumgr --conntype ble --connstring peer_name='nRF54L15 Tag' image upload zephyr.signed.bin
+mcumgr --conntype ble --connstring peer_name='nRF54L15 Tag' image list
+mcumgr --conntype ble --connstring peer_name='nRF54L15 Tag' image test <hash-of-slot1>
+mcumgr --conntype ble --connstring peer_name='nRF54L15 Tag' reset
+```
+
+Slot state is also visible from the shell (RTT, or over BLE via
+`shell exec "mcuboot"`).
+
+### Test / confirm / revert
+
+MCUboot boots a freshly uploaded image as a **test** image. The `src/dfu/` module
+confirms it automatically after `APP_DFU_CONFIRM_DELAY_S` (default **10 s**) of
+uptime — so you do not have to press *Confirm* — while still giving rollback
+protection: anything that resets the tag before that deadline (fault, watchdog,
+power loss) leaves the image unconfirmed and MCUboot reverts to the previous one
+on the next boot. Confirming from a host works too, and cancels the timer.
+
+While an upload is in progress the module stops Channel Sounding
+(`APP_DFU_PAUSE_CS`), because writing the image into RRAM stalls the CPU in
+bursts and disturbs CS subevent timing. Pick the role again with the button (or
+`cs start`) after the update.
+
+### Security
+
+The SMP service is **unauthenticated** (see *Notes & limitations*), so
+**MCUboot's signature check is the only thing gating what runs on the tag** — and
+this build signs with MCUboot's stock development key
+(`bootloader/mcuboot/root-ed25519.pem`, ED25519 + SHA512), which is public. That
+is fine for a demo but means anyone can build an image this tag will accept. For
+production, point `SB_CONFIG_BOOT_SIGNATURE_KEY_FILE` at a private project key,
+or provision a key into the nRF54L15's **KMU**
+(`SB_CONFIG_MCUBOOT_SIGNATURE_USING_KMU`).
+
 ## Configuration reference
 
 Each module is enabled by its `CONFIG_APP_*` symbol; key tunables:
@@ -231,6 +360,10 @@ Each module is enabled by its `CONFIG_APP_*` symbol; key tunables:
 | `BT_MAX_CONN` | 2 | Central CS link + peripheral host link simultaneously |
 | `MCUMGR` / `MCUMGR_TRANSPORT_BT` / `MCUMGR_GRP_SHELL` / `SHELL_BACKEND_DUMMY` | y | SMP-over-BLE remote shell (MCUmgr; also needs `ZCBOR`) |
 | `MCUMGR_TRANSPORT_BT_PERM_RW` | y | SMP service open — no encryption/pairing (see limitations) |
+| `SB_CONFIG_BOOTLOADER_MCUBOOT` (`sysbuild.conf`) | y | Build MCUboot so the app can be updated over the air |
+| `MCUMGR_GRP_IMG` / `IMG_MANAGER` / `MCUBOOT_SHELL` | y | OTA image upload + `mcuboot` slot commands |
+| `APP_DFU_CONFIRM_DELAY_S` | 10 | Healthy uptime before a test image self-confirms (0 = immediately) |
+| `APP_DFU_PAUSE_CS` | y | Stop ranging while an image upload is in flight |
 | antenna paths (`boards/…cpuapp.conf`) | 2 antennas / 4 paths | CS antenna switching |
 
 ## Notes & limitations

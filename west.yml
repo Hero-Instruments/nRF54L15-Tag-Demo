@@ -34,6 +34,7 @@ manifest:
           - picolibc           # C library
           - segger             # RTT (console / log / shell)
           - zcbor              # MCUmgr / SMP encoding
+          - mcuboot            # bootloader (OTA/DFU over SMP) — see sysbuild.conf
 
   self:
     path: nRF54L15TagDemo

@@ -1,0 +1,18 @@
+/*
+ * MCUboot image overlay for the nRF54L15 Tag.
+ *
+ * MCUboot selects USE_DT_CODE_PARTITION, and the board DTS chooses
+ * `zephyr,code-partition = &slot0_partition` (correct for the application).
+ * Without this override the *bootloader* would also link at slot0 (0x10000)
+ * instead of boot_partition (0x0).
+ *
+ * Deliberately does NOT include the application's board overlay — that file
+ * carries the Channel Sounding antenna-switch node and the sensor aliases,
+ * none of which belong in the bootloader.
+ */
+
+/ {
+	chosen {
+		zephyr,code-partition = &boot_partition;
+	};
+};
