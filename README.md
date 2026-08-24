@@ -90,6 +90,19 @@ application (see [Firmware update over BLE (OTA)](#firmware-update-over-ble-ota)
 `west flash` programs both; `merged_nrf54l15tag_nrf54l15_cpuapp.hex` in the build
 directory is the equivalent single-file image.
 
+> **A build directory created before MCUboot was added must be rebuilt pristine.**
+> Sysbuild cannot add a second image to an existing build tree incrementally, so
+> `rm -rf build` (or `--pristine`) is required once. Until you do, that directory
+> still holds a single, pre-MCUboot application — and flashing it reports success
+> while leaving the tag running old firmware or nothing at all (no LED, no button
+> response, silent RTT). Check `build/domains.yaml`: it must list **both**
+> `mcuboot` and `nRF54L15TagDemo`.
+>
+> For the same reason, never flash `zephyr.signed.bin`, the standalone
+> `mcuboot.hex`, or the `.elf` on their own over J-Link — the application links at
+> `0x10000` and needs MCUboot at `0x0` beneath it. Use `west flash`, or the
+> `factory.hex` release asset.
+
 ### Workspace setup (west)
 
 This repo is also a **west manifest repository** ([west.yml](west.yml), NCS
