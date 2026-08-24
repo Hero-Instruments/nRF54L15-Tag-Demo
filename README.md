@@ -275,7 +275,27 @@ push to `main` so breakage shows up before you tag. Both build inside Nordic's
 [west.yml](west.yml), sharing the steps in
 [`.github/actions/ncs-build`](.github/actions/ncs-build/action.yml).
 
-To cut a release:
+To cut a release, run [`scripts/release.sh`](scripts/release.sh). It bumps
+[VERSION](VERSION), commits, tags and pushes — showing you exactly what it will do and
+asking before anything leaves the machine:
+
+```sh
+scripts/release.sh              # patch: 1.0.0 -> 1.0.1
+scripts/release.sh minor        # 1.0.0 -> 1.1.0
+scripts/release.sh major        # 1.0.0 -> 2.0.0
+scripts/release.sh 1.2.0        # an explicit version
+scripts/release.sh 1.0.1-rc1    # VERSION 1.0.1, tag v1.0.1-rc1 (pre-release)
+
+scripts/release.sh --dry-run    # show the plan and exit
+scripts/release.sh --no-push    # bump, commit and tag locally only
+```
+
+It refuses to run on a dirty tree, off `main`, when `main` disagrees with `origin/main`,
+or when the tag already exists — all before touching anything, so a rejected release
+leaves the tree exactly as it was. The final push is `--atomic`, so the tag can never
+land without its commit.
+
+The equivalent by hand:
 
 ```sh
 # 1. bump VERSION (this stamps the MCUboot image header)
@@ -283,10 +303,10 @@ $EDITOR VERSION
 git commit -am "release 1.0.1"
 # 2. tag and push
 git tag v1.0.1
-git push origin main --tags
+git push --atomic origin main v1.0.1
 ```
 
-The tag must agree with [VERSION](VERSION) — `v1.0.1` requires
+Either way the tag must agree with [VERSION](VERSION) — `v1.0.1` requires
 `VERSION_MAJOR/MINOR/PATCHLEVEL = 1/0/1`. The workflow checks this and **fails on
 mismatch** rather than publishing a release whose image header contradicts its name. A
 suffixed tag (`v1.0.1-rc1`) is allowed against the same `VERSION` and is marked as a
