@@ -28,7 +28,7 @@ jobs:
       prerelease: ${{ steps.version.outputs.prerelease }}
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           path: nRF54L15TagDemo
 
@@ -91,7 +91,7 @@ jobs:
           cat SHA256SUMS.txt
 
       - name: Upload the staged assets
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-assets
           retention-days: 7
@@ -107,7 +107,7 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: release-assets
           path: release
@@ -118,6 +118,13 @@ jobs:
           PRERELEASE: ${{ needs.build.outputs.prerelease }}
         run: |
           set -euo pipefail
-          args=(--generate-notes --verify-tag --title "${GITHUB_REF_NAME}")
+
+          # --repo is required, and must be the flag rather than the GH_REPO env
+          # var: this job has no checkout, and gh only skips its git calls when
+          # the *flag* is set (`if opts.RepoOverride == ""` in create.go, where
+          # RepoOverride comes from cmd.Flags()). Without it gh tries to infer
+          # the repo from a git remote and dies with "not a git repository".
+          # --verify-tag is unaffected — it checks the tag over the API.
+          args=(--repo "${GITHUB_REPOSITORY}" --generate-notes --verify-tag --title "${GITHUB_REF_NAME}")
           [ "${PRERELEASE}" = "true" ] && args+=(--prerelease)
           gh release create "${GITHUB_REF_NAME}" "${args[@]}" release/*
