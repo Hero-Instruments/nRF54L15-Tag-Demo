@@ -71,7 +71,16 @@ static enum mgmt_cb_return img_event_cb(uint32_t event, enum mgmt_cb_return prev
 		upload_in_progress = true;
 		LOG_INF("image upload started");
 #if IS_ENABLED(CONFIG_APP_DFU_PAUSE_CS)
-		if (cs_is_running()) {
+		/* Initiator only. cs_reflector_stop() disconnects
+		 * ble_peripheral_conn(), which during an upload is the SMP host
+		 * itself — stopping the reflector here would tear down the very
+		 * link carrying the update. It would also be pointless: the tag
+		 * has a single peripheral slot, so while an SMP host is connected
+		 * the reflector cannot have a ranging peer to begin with.
+		 * cs_initiator_stop() only drops the outbound central link to the
+		 * peer tag, which is what we actually want to quiesce.
+		 */
+		if (cs_is_running() && cs_get_role() == CS_ROLE_INITIATOR) {
 			LOG_INF("stopping Channel Sounding for the duration of the upload");
 			(void)cs_stop();
 		}
