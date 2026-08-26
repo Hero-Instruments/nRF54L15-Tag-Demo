@@ -12,8 +12,9 @@ services. Built on the nRF Connect SDK **v3.4.0**.
   **accelerometer-assisted stabilization**.
 - **Onboard sensors** — BME688 environmental, ADXL367 accelerometer, BMI270 IMU;
   periodic sampling + logging with runtime ODR/range control.
-- **Standard BLE service** — Environmental Sensing Service (ESS, `0x181A`):
-  temperature / humidity / pressure (read + notify).
+- **Standard BLE services** — Environmental Sensing Service (ESS, `0x181A`):
+  temperature / humidity / pressure (read + notify); Device Information Service
+  (DIS, `0x180A`): manufacturer, model, firmware revision, per-unit serial.
 - **Custom BLE service** — Motion Service: high-rate accelerometer & gyroscope
   streaming over notifications, plus a runtime config characteristic
   (see [docs/MOTION_SERVICE.md](docs/MOTION_SERVICE.md)).
@@ -67,6 +68,7 @@ module under `src/` with its own `CMakeLists.txt` and `Kconfig`, toggled by a
 | `src/ble/` | `APP_BLE_CORE` / `APP_ADV` | BLE stack enable, connection & security callbacks, role-aware **dual-connection** tracking (central CS link + peripheral host link), and the role-independent connectable **advertiser** (`adv.c`) |
 | `src/cs/` | `APP_CS` | Channel Sounding: shared state machine, initiator, reflector, distance filtering |
 | `src/ess/` | `APP_ESS` | Environmental Sensing Service (GATT server) |
+| `src/dis/` | `APP_DIS` | Device Information Service serial number (the service itself is Zephyr's `CONFIG_BT_DIS`) |
 | `src/motion/` | `APP_MOTION` | Custom Motion Service (accel/gyro notify + config char) |
 | `src/ux/` | `APP_UX` | Button role-cycling + RGB-LED role/distance indication |
 | `src/control/` | `APP_CONTROL` | RTT shell commands |
@@ -181,6 +183,28 @@ to reconfigure the IMU at runtime.
 > to the reflector *and* accepts an inbound (peripheral) link from a host, so a
 > phone/screen can read ESS/Motion/SMP and poll `cs distance` while ranging
 > continues. Advertising stops only once that host link is connected.
+
+### Device Information Service (DIS)
+Connect and read the standard DIS characteristics (`0x180A`) — no app-specific
+knowledge needed, any generic BLE client shows them:
+
+| Characteristic | UUID | Value |
+|---|---|---|
+| Manufacturer Name | `0x2A29` | `Hero Instruments, Inc` |
+| Model Number | `0x2A24` | `nRF54L15 Tag` |
+| Firmware Revision | `0x2A26` | e.g. `0.0.7+0` — derived from [`VERSION`](VERSION) |
+| Serial Number | `0x2A25` | the tag's Bluetooth address, e.g. `E1A2B3C4D5F6` |
+
+**Firmware Revision is the quickest way to confirm which image a tag is actually
+running** after an OTA — no RTT cable, no SMP image-list query. The string is not
+hard-coded: `CONFIG_BT_DIS_FW_REV_STR` is left at its Kconfig default,
+`$(APP_VERSION_TWEAK_STRING)`, which is the same value `imgtool` stamps into the
+MCUboot image header, so DIS and the OTA metadata cannot disagree.
+
+The Serial Number is written at boot by [`src/dis/`](src/dis/) from the Bluetooth
+identity address, so it matches the address a scanner shows and is unique per
+unit. PnP ID is deliberately disabled — Zephyr enables it by default with Vendor
+ID `0x0000`, which is not an assigned ID.
 
 ### Environmental Sensing Service (ESS)
 With a BLE central (e.g. the **nRF Connect** phone app), scan for **`nRF54L15 Tag`**

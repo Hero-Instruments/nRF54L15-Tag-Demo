@@ -1,0 +1,12 @@
+config APP_DIS
+	bool "Device Information Service serial number"
+	default y
+	depends on BT_DIS_SETTINGS && SETTINGS_RUNTIME
+	help
+	  Program the DIS Serial Number characteristic (0x2A25) from the
+	  device's Bluetooth identity address at boot, so each tag reports a
+	  unique serial that matches the address a scanner shows.
+
+	  The service itself comes from Zephyr (CONFIG_BT_DIS, configured in
+	  prj.conf) and registers statically at boot; this module only fills in
+	  the one value that cannot be known at build time.

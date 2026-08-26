@@ -19,6 +19,7 @@
 #include "ble/adv.h"
 #include "cs/cs_shared.h"
 #include "ess/ess.h"
+#include "dis/dis.h"
 #include "motion/motion.h"
 #include "ux/ux.h"
 
@@ -61,6 +62,14 @@ int main(void)
 	err = ess_init();
 	if (err) {
 		LOG_ERR("ess_init failed (%d)", err);
+	}
+
+	/* After ble_core_init(): the serial number comes from bt_id_get(),
+	 * which needs bt_enable() to have run.
+	 */
+	err = dis_init();
+	if (err) {
+		LOG_ERR("dis_init failed (%d)", err);
 	}
 
 	err = motion_init();
