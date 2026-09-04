@@ -1,0 +1,48 @@
+config APP_TPUT
+	bool "Throughput test service (write / write-no-rsp / notify / indicate)"
+	default y
+	depends on BT_PERIPHERAL
+	help
+	  Custom 128-bit GATT service for measuring BLE transfer rate. One data
+	  characteristic carries all four transfer paths (write without
+	  response, write with response, notification, indication); a control
+	  characteristic starts/stops device-to-host runs and reports per-path
+	  packet and byte counters.
+
+if APP_TPUT
+
+config APP_TPUT_THREAD_STACK_SIZE
+	int "Throughput sender thread stack size"
+	default 2048
+
+config APP_TPUT_THREAD_PRIO
+	int "Throughput sender thread priority"
+	default 6
+	help
+	  Preemptible priority for the thread that pumps notifications and
+	  indications during a run.
+
+config APP_TPUT_REQUEST_FAST_INTERVAL
+	bool "Request a short connection interval when a run starts"
+	default y
+	help
+	  Ask the central for a short connection interval at the start of a
+	  device-to-host run. The central ultimately decides. Turn this off to
+	  measure throughput at whatever interval the central already chose.
+
+config APP_TPUT_CONN_INTERVAL_MIN
+	int "Requested min connection interval (1.25 ms units)"
+	default 6
+	range 6 3200
+	depends on APP_TPUT_REQUEST_FAST_INTERVAL
+	help
+	  6 = 7.5 ms, the BLE standard minimum. Sub-7.5 ms requires
+	  controller/central support.
+
+config APP_TPUT_CONN_INTERVAL_MAX
+	int "Requested max connection interval (1.25 ms units)"
+	default 6
+	range 6 3200
+	depends on APP_TPUT_REQUEST_FAST_INTERVAL
+
+endif # APP_TPUT

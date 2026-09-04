@@ -18,6 +18,10 @@ services. Built on the nRF Connect SDK **v3.4.0**.
 - **Custom BLE service** — Motion Service: high-rate accelerometer & gyroscope
   streaming over notifications, plus a runtime config characteristic
   (see [docs/MOTION_SERVICE.md](docs/MOTION_SERVICE.md)).
+- **Throughput test service** — measures BLE transfer rate over all four GATT
+  paths (write without response, write, notification, indication) at variable
+  packet sizes up to the ATT MTU
+  (see [docs/THROUGHPUT_SERVICE.md](docs/THROUGHPUT_SERVICE.md)).
 - **High-rate IMU sampling** — configurable poll rate up to the sensor ODR,
   buffered for BLE streaming.
 - **RTT shell** — runtime control of roles, ranging, sensors, and logging.
@@ -70,6 +74,7 @@ module under `src/` with its own `CMakeLists.txt` and `Kconfig`, toggled by a
 | `src/ess/` | `APP_ESS` | Environmental Sensing Service (GATT server) |
 | `src/dis/` | `APP_DIS` | Device Information Service serial number (the service itself is Zephyr's `CONFIG_BT_DIS`) |
 | `src/motion/` | `APP_MOTION` | Custom Motion Service (accel/gyro notify + config char) |
+| `src/tput/` | `APP_TPUT` | Throughput test service (write / write-no-rsp / notify / indicate + control char) |
 | `src/ux/` | `APP_UX` | Button role-cycling + RGB-LED role/distance indication |
 | `src/control/` | `APP_CONTROL` | RTT shell commands |
 | `src/dfu/` | `APP_DFU` | OTA image confirm/revert policy + quiesces CS during an upload |
@@ -77,8 +82,8 @@ module under `src/` with its own `CMakeLists.txt` and `Kconfig`, toggled by a
 Top-level: `CMakeLists.txt`, `Kconfig`, `prj.conf`, `Kconfig.sysbuild`,
 `sysbuild.conf` (enables MCUboot), `VERSION` (stamps the signed image),
 `boards/nrf54l15tag_nrf54l15_cpuapp.{overlay,conf}`, `sysbuild/` (MCUboot and
-IPC-radio image configs), and `docs/MOTION_SERVICE.md` (client-facing Motion
-protocol spec).
+IPC-radio image configs), and `docs/` — client-facing protocol specs for the
+Motion (`MOTION_SERVICE.md`) and Throughput (`THROUGHPUT_SERVICE.md`) services.
 
 ## Building
 
@@ -218,6 +223,29 @@ notifications on the **Accel** and/or **Gyro** characteristic to auto-start
 high-rate streaming; write the **Config** characteristic to set poll rate, ODR,
 and range from the client. Full byte-level protocol + Python/TypeScript parsing
 examples are in **[docs/MOTION_SERVICE.md](docs/MOTION_SERVICE.md)**.
+
+### Throughput Service (custom, link benchmarking)
+Connect and discover the custom Throughput Service (128-bit UUID). A single
+**Data** characteristic carries all four GATT transfer paths, so each can be
+measured over the same link:
+
+| Direction | Mechanism | Driven by |
+|-----------|-----------|-----------|
+| host → tag | Write Without Response | the host, by writing repeatedly |
+| host → tag | Write (with response) | the host, by writing repeatedly |
+| tag → host | Notification | the tag, started from the Control characteristic |
+| tag → host | Indication | the tag, started from the Control characteristic |
+
+Write the **Control** characteristic to start a device→host run (choosing notify
+or indicate, the packet size, and a duration / byte-count / free-run limit); read
+it back for per-path packet and byte counters plus the negotiated ATT MTU.
+Payloads are raw filler of any length up to `ATT_MTU - 3`, so a run measures the
+transport ceiling with no protocol overhead.
+
+Results are only meaningful alongside the link parameters — negotiate MTU, 2M PHY
+and Data Length Extension first, and **confirm DLE was actually granted** (251
+octets, not 27). Full byte-level protocol and a worked measurement procedure are
+in **[docs/THROUGHPUT_SERVICE.md](docs/THROUGHPUT_SERVICE.md)**.
 
 ### High-rate IMU streaming (RTT)
 `sensor odr imu-accel 1600` then `sensor stream start` — the RTT log reports the

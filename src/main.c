@@ -21,6 +21,7 @@
 #include "ess/ess.h"
 #include "dis/dis.h"
 #include "motion/motion.h"
+#include "tput/tput.h"
 #include "ux/ux.h"
 
 LOG_MODULE_REGISTER(main, CONFIG_LOG_DEFAULT_LEVEL);
@@ -75,6 +76,11 @@ int main(void)
 	err = motion_init();
 	if (err) {
 		LOG_ERR("motion_init failed (%d)", err);
+	}
+
+	err = tput_init();
+	if (err) {
+		LOG_ERR("tput_init failed (%d)", err);
 	}
 
 	err = ux_init();
