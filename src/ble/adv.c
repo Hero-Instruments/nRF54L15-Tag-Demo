@@ -6,33 +6,44 @@
 /*
  * Connectable BLE advertising — role-independent single advertiser.
  *
- * Advertises whenever the tag can accept a connection (single-connection model,
- * BT_MAX_CONN=1):
+ * Advertises whenever the tag can accept an inbound connection. With
+ * CONFIG_BT_MAX_CONN=2 the second slot is the outbound CS link, so the
+ * peripheral slot alone decides whether we advertise:
  *   - disconnected + idle       -> ad_idle      (ESS only)      : phone services
  *   - disconnected + reflector  -> ad_reflector (RANGING + ESS) : CS initiator or phone
- *   - initiator (running)       -> off (device is central, needs its one slot)
- *   - connected                 -> off (slot in use); resumes on disconnect
+ *   - peripheral connected      -> off (slot in use); resumes on disconnect
  *
- * Two rules keep the software state honest about the radio — do not drop either,
- * they are what make a reconnect after a disconnect work at all:
+ * Three rules keep this from wedging with the radio silent. The previous
+ * version trusted a software mirror (`current`) of the radio state and skipped
+ * the reconcile whenever it already matched; any desync, or any single failed
+ * bt_le_adv_start(), was therefore permanent. Do not reintroduce that.
  *
- * 1. A BT_LE_ADV_OPT_CONN advertiser is stopped *by the controller* the instant it
- *    creates a connection, and the application must start it again (see the
- *    BT_LE_ADV_OPT_CONN docs in zephyr/bluetooth/bluetooth.h). So `connected` marks
- *    `current = ADV_OFF` for a peripheral link; otherwise `current` goes stale and
- *    the want==current short-circuit below turns every later refresh into a no-op.
+ * 1. We do NOT track whether the controller consumed the advertiser. A
+ *    BT_LE_ADV_OPT_CONN advertiser is stopped by the controller the instant it
+ *    creates a connection (see the BT_LE_ADV_OPT_CONN docs in
+ *    zephyr/bluetooth/bluetooth.h) — but that also happens for a connection
+ *    that then *fails*, and Zephyr calls `disconnected` only for links that
+ *    actually reached BT_CONN_DISCONNECT_COMPLETE. So every `connected`
+ *    callback, success or failure, either role, just marks the state dirty and
+ *    the next reconcile re-derives the radio from scratch.
  *
- * 2. adv_refresh() only *queues* the reconcile. Running it on the system workqueue
- *    means it observes ble_core's conn pointers after every BT_CONN_CB_DEFINE
- *    callback has returned — those run in linker-sorted (alphabetical) order, so
- *    reconciling inline here would read `ble_peripheral_conn()` before ble_core has
- *    cleared it. It also keeps bt_le_adv_start() off the BT RX thread, which the
- *    DFU mgmt callback reaches via cs_stop().
+ * 2. No error path may leave `current` stranded. A failed stop still clears
+ *    `current` and falls through to the start; a failed start always arms the
+ *    retry below.
  *
- * Restarting from `disconnected` can still fail with -ENOMEM when both conn slots
- * are busy (initiator role: outbound CS link + inbound phone link), because the
- * conn object is not back in the pool yet. `recycled` is the guaranteed-safe retry
- * point; a failed start leaves `current = ADV_OFF` so that retry takes effect.
+ * 3. adv_reconcile() re-arms itself every second while we want to advertise but
+ *    are not. That is the backstop that makes "never advertises again"
+ *    structurally impossible — -ENOMEM from a not-yet-recycled conn object,
+ *    -EAGAIN, a controller status error, or a cause nobody has found yet all
+ *    recover on their own.
+ *
+ * adv_refresh() only *queues* the reconcile, and that matters: notify_disconnected()
+ * itself runs on the system workqueue (via conn->deferred_work), so adv_work is
+ * FIFO-behind it and observes ble_core's conn pointers already cleared. Running
+ * it inline would read ble_peripheral_conn() before ble_core cleared it, since
+ * conn callbacks run in linker-sorted order and adv_conn_cbs sorts first. It
+ * also keeps bt_le_adv_start() off the BT RX thread, which the DFU mgmt callback
+ * reaches via cs_stop().
  */
 #include "adv.h"
 #include "ble_core.h"
@@ -45,6 +56,11 @@
 #include <zephyr/logging/log.h>
 
 LOG_MODULE_REGISTER(app_adv, CONFIG_LOG_DEFAULT_LEVEL);
+
+/* Retry cadence while we want to advertise but are not. */
+#define ADV_RETRY_INTERVAL K_SECONDS(1)
+/* After the first failure, log only every Nth retry so RTT stays readable. */
+#define ADV_RETRY_LOG_EVERY 30
 
 /* Idle payload: Environmental Sensing UUID + name (phone-facing services). */
 static const struct bt_data ad_idle[] = {
@@ -72,8 +88,29 @@ enum adv_variant {
 	ADV_REFLECTOR,
 };
 
-static K_MUTEX_DEFINE(adv_mtx);
+static const char *variant_str(enum adv_variant v)
+{
+	switch (v) {
+	case ADV_REFLECTOR:
+		return "reflector";
+	case ADV_IDLE:
+		return "idle";
+	default:
+		return "off";
+	}
+}
+
+/* Touched only by adv_reconcile(), which runs solely on the system workqueue
+ * and is therefore serialised against itself. No lock needed.
+ */
 static enum adv_variant current = ADV_OFF;
+static uint32_t retry_count;
+
+/* Set from the BT RX thread (`connected`), consumed by the reconcile. Starts
+ * clear: at boot the radio state genuinely is known (nothing started yet), and
+ * a dirty first pass would only make the host log "No valid legacy adv to stop".
+ */
+static atomic_t adv_dirty = ATOMIC_INIT(0);
 
 static enum adv_variant desired_variant(void)
 {
@@ -89,29 +126,47 @@ static enum adv_variant desired_variant(void)
 	return ADV_IDLE;
 }
 
+static void adv_reconcile(struct k_work *work);
+static K_WORK_DELAYABLE_DEFINE(adv_work, adv_reconcile);
+
 static void adv_reconcile(struct k_work *work)
 {
 	ARG_UNUSED(work);
 
-	k_mutex_lock(&adv_mtx, K_FOREVER);
-
+	/* Claim the dirty flag: a `connected` event may have consumed the
+	 * advertiser without us being told, so re-derive rather than trust
+	 * `current` (rule 1).
+	 */
+	bool dirty = atomic_cas(&adv_dirty, 1, 0);
 	enum adv_variant want = desired_variant();
 
-	if (want == current) {
-		k_mutex_unlock(&adv_mtx);
+	/* Event-driven passes only: the once-a-second retry loop below would
+	 * otherwise flood RTT. This one line names the cause of a stuck
+	 * advertiser (`log disable inf app_adv` once that is settled).
+	 */
+	if (retry_count == 0) {
+		LOG_INF("reconcile: want=%s current=%s dirty=%d peri=%p cs=%d/%s",
+			variant_str(want), variant_str(current), (int)dirty,
+			(void *)ble_peripheral_conn(), (int)cs_is_running(),
+			cs_role_str(cs_get_role()));
+	}
+
+	if (want == current && !dirty) {
 		return;
 	}
 
-	if (current != ADV_OFF) {
+	if (current != ADV_OFF || dirty) {
 		int err = bt_le_adv_stop();
 
+		/* -EALREADY is the normal answer on the dirty path (the
+		 * controller already stopped it). Anything else is logged but
+		 * must not abort: `current` still goes OFF and we still try to
+		 * start, because bailing here is what makes silence permanent
+		 * (rule 2). A genuinely-failed stop surfaces as -EALREADY from
+		 * the start below, which the retry then covers.
+		 */
 		if (err && err != -EALREADY) {
-			/* Leave `current` alone: we do not know what the radio is
-			 * doing, and starting a second advertiser would fail anyway.
-			 */
-			LOG_ERR("adv stop failed (%d)", err);
-			k_mutex_unlock(&adv_mtx);
-			return;
+			LOG_WRN("adv stop failed (%d)", err);
 		}
 		current = ADV_OFF;
 	}
@@ -123,50 +178,52 @@ static void adv_reconcile(struct k_work *work)
 						     : ARRAY_SIZE(ad_idle);
 		int err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_2, ad, len, NULL, 0);
 
-		if (err == -ENOMEM) {
-			/* No free conn object yet — expected when restarting from
-			 * `disconnected`. `current` stays ADV_OFF so the `recycled`
-			 * callback retries this and succeeds.
+		if (!err) {
+			current = want;
+			retry_count = 0;
+			LOG_INF("advertising: %s", variant_str(want));
+		} else if (err == -ENOMEM) {
+			/* No free conn object yet — expected when restarting
+			 * from `disconnected`. `recycled` normally beats the
+			 * retry to it; either way we come back.
 			 */
 			LOG_DBG("adv start deferred: no free conn object");
-		} else if (err) {
-			LOG_ERR("adv start failed (%d)", err);
-		} else {
-			current = want;
-			LOG_INF("advertising: %s",
-				want == ADV_REFLECTOR ? "reflector" : "idle");
+		} else if (retry_count == 0 ||
+			   (retry_count % ADV_RETRY_LOG_EVERY) == 0) {
+			LOG_WRN("adv start failed (%d), retrying", err);
 		}
-	} else {
+	} else if (current == ADV_OFF) {
+		retry_count = 0;
 		LOG_INF("advertising: off");
 	}
 
-	k_mutex_unlock(&adv_mtx);
+	/* Rule 3: while we want to advertise and are not, keep trying. */
+	if (want != ADV_OFF && current == ADV_OFF) {
+		retry_count++;
+		k_work_reschedule(&adv_work, ADV_RETRY_INTERVAL);
+	}
 }
-
-static K_WORK_DEFINE(adv_work, adv_reconcile);
 
 void adv_refresh(void)
 {
-	/* A no-op if already queued, so the several triggers below coalesce. */
-	k_work_submit(&adv_work);
+	/* Coalesces with an already-queued refresh, and pre-empts a pending
+	 * retry so a real event is acted on immediately.
+	 */
+	k_work_reschedule(&adv_work, K_NO_WAIT);
 }
 
 static void connected(struct bt_conn *conn, uint8_t err)
 {
-	struct bt_conn_info info;
+	ARG_UNUSED(conn);
+	ARG_UNUSED(err);
 
-	/* On success as peripheral the controller has already stopped the
-	 * advertiser (see rule 1 in the file header) — mirror that here, or every
-	 * later refresh short-circuits on a stale `current` and never restarts it.
+	/* Any connection event may have consumed the advertiser — including one
+	 * that failed, for which no `disconnected` will follow. Don't try to
+	 * work out whether it did; just force the next reconcile to re-derive
+	 * the radio state (rule 1).
 	 */
-	if (!err && !bt_conn_get_info(conn, &info) &&
-	    info.role == BT_CONN_ROLE_PERIPHERAL) {
-		k_mutex_lock(&adv_mtx, K_FOREVER);
-		current = ADV_OFF;
-		k_mutex_unlock(&adv_mtx);
-	}
-
-	adv_refresh(); /* slot now in use (or connect failed) -> reconcile */
+	atomic_set(&adv_dirty, 1);
+	adv_refresh();
 }
 
 static void disconnected(struct bt_conn *conn, uint8_t reason)
@@ -179,7 +236,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 static void recycled(void)
 {
 	/* A conn object is back in the pool: the safe point to (re)start the
-	 * advertiser, and the retry for an -ENOMEM start above.
+	 * advertiser, and the fast path out of an -ENOMEM start above.
 	 */
 	adv_refresh();
 }
