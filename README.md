@@ -174,6 +174,15 @@ working at the same time. The SMP service is **open** (no pairing required — s
 [Notes & limitations](#notes--limitations)), so a screen/host can connect and poll
 `cs distance` while the tag ranges.
 
+One caveat: output returned over SMP is captured into a fixed buffer
+(`CONFIG_SHELL_BACKEND_DUMMY_BUF_SIZE`, 1184 bytes here) and anything past it is
+dropped **silently** — no error, no ellipsis. Bare `help` is the tightest case at
+1147 bytes, so headroom is about 36 bytes; adding a new *root* command (subcommands
+don't count) can push it back over. If that happens, either trim a root command's
+help or drop one you don't need — `resize` alone accounts for 207 bytes. The
+ceiling is hard: the capture has to fit one SMP frame, and `MCUMGR_TRANSPORT_NETBUF_SIZE`
+is pinned at 1230 for the OTA path.
+
 ## Functionality & how to demo
 
 ### Onboard sensors
@@ -464,9 +473,16 @@ Each module is enabled by its `CONFIG_APP_*` symbol; key tunables:
   (RAS ↔ RAS or IPT ↔ IPT); the two transports don't interoperate.
 - **Security:** the tag is `NoInputNoOutput` (no pairing/IO-capability callbacks), so
   authenticated (MITM) pairing isn't possible. The SMP service is therefore left **open**
-  (`MCUMGR_TRANSPORT_BT_PERM_RW`) — any host can run shell commands over BLE without
-  pairing; acceptable for a demo, not for production. The CS tag↔tag link is still
-  encrypted (Just-Works L2, required by CS and the RAS GATT service).
+  (`MCUMGR_TRANSPORT_BT_PERM_RW`) — any host in range can run shell commands over BLE
+  without pairing. Note how far that reaches: `KERNEL_SHELL` and `MCUBOOT_SHELL` are both
+  compiled in, so an unpaired host isn't limited to reading status — it can `kernel reboot`
+  the tag or `mcuboot erase` a slot, and upload an image over `MCUMGR_GRP_IMG`. (Zephyr's
+  `devmem` command — arbitrary physical memory read/write — was reachable the same way and
+  is now disabled, `CONFIG_DEVMEM_SHELL=n`; don't re-enable it while SMP is open.) Acceptable
+  for a demo, not for production; tighten it with `MCUMGR_TRANSPORT_BT_PERM_RW_ENCRYPT`
+  (Just-Works pairing, reachable on this device — unlike the `..._AUTHEN` default) if this
+  ever leaves the bench. The CS tag↔tag link is still encrypted (Just-Works L2, required by
+  CS and the RAS GATT service).
 - **Known issue:** connecting a host to the tag *while it is an initiator ranging* can
   currently disrupt the CS session (the host link's connect/security events perturb the
   initiator state machine). Pending a connection-callback role-gating fix; until then,
