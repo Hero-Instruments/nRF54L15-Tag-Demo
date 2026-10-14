@@ -179,21 +179,35 @@ from step 4. Option B only replaces the SDK source.
 
 ## 6. Build
 
-### In VS Code
+### In VS Code (using the project's build preset)
+
+The repo includes a ready-made build configuration, the `build_cli` preset in
+[CMakePresets.json](../CMakePresets.json). Choosing it fills in the board target, the
+`rtt-console` snippet and the build directory, so you don't have to type them yourself.
 
 1. In the **nRF Connect** panel, under *Applications*, select `nRF54L15TagDemo`, then
    **Add build configuration**.
-2. Set:
+2. At the top of the form, open the **CMake Preset** drop-down and choose
+   **Build for nRF54l15 TAG nRF54l15 Application (build_cli)**. The form fills in:
+   - **Board target:** `nrf54l15tag/nrf54l15/cpuapp`
+   - **Snippets:** `rtt-console`
+   - **Build directory:** `build_cli`
+3. Check the fields the preset doesn't set:
    - **SDK / Toolchain:** v3.4.0 / v3.4.0
-   - **Board target:** `nrf54l15tag/nrf54l15/cpuapp`. If it isn't listed, switch the board
-     list from *Nordic kits* to *All boards*.
-   - **Snippets:** add **`rtt-console`**. Don't skip this (see [section 2](#2-concepts-in-five-minutes)).
-   - **System build (sysbuild):** leave it enabled, which is the default.
+   - **System build (sysbuild):** leave it on *Build system default*. NCS enables sysbuild
+     by default, and sysbuild is what adds MCUboot.
    - Leave the base configuration file as `prj.conf` and the extra Kconfig/overlay fields empty.
-3. Click **Generate and Build**. The first build takes a few minutes.
+4. Click **Generate and Build**. The first build takes a few minutes.
+
+> **No CMake Preset drop-down?** The extension shows it only when the application folder
+> contains `CMakePresets.json`, so check that you opened the repo root. Older extension
+> versions don't have the drop-down. In either case, fill in the form by hand: board target
+> `nrf54l15tag/nrf54l15/cpuapp` (switch the board list to *All boards* if it isn't listed),
+> snippet **`rtt-console`** (don't skip this; see [section 2](#2-concepts-in-five-minutes)),
+> and sysbuild on.
 
 See [How to set up a build configuration](https://docs.nordicsemi.com/bundle/nrf-connect-vscode/page/guides/build_config.html)
-in the extension docs for screenshots of this dialog.
+in the extension docs for screenshots of this form.
 
 ### From a terminal
 
@@ -214,14 +228,20 @@ Then, from the repo root:
 west build -b nrf54l15tag/nrf54l15/cpuapp -S rtt-console -d build_cli .
 ```
 
-- `-b`: the board target. `-S rtt-console`: the snippet. `-d build_cli`: the build directory.
-  VS Code uses `build/`, so a separate directory stops the two from overwriting each other.
-  `.`: the app source.
+- `-b`: the board target. `-S rtt-console`: the snippet. `-d build_cli`: the build directory,
+  the same one the preset uses, so VS Code and the terminal share one build. `.`: the app source.
 - **Pristine rebuild** (after editing `CMakeLists.txt`, `Kconfig` files, board files or
   `sysbuild.conf`): add `-p always`. Put `always` in explicitly. A bare `-p`/`--pristine`
   placed before `.` swallows the `.` as its argument and the command fails.
-- [CMakePresets.json](../CMakePresets.json) defines the same configuration (`build_cli`) for
-  IDEs that understand CMake presets.
+- **Or use the preset**, so the terminal build matches VS Code exactly:
+
+  ```sh
+  west build -d build_cli . -- --preset=build_cli
+  ```
+
+  Everything after `--` is passed to CMake. Because `-b` isn't given, west prints
+  `WARNING: This looks like a fresh build and BOARD is unknown`. You can ignore it, because the
+  preset supplies the board (check for `-- Board: nrf54l15tag` in the output).
 
 ### Check your build
 
@@ -396,8 +416,12 @@ RTT output.
 
 When you add a feature, follow the existing module pattern: a new `src/<module>/` directory
 with its own `CMakeLists.txt` and `Kconfig`, a `CONFIG_APP_<MODULE>` switch, and a header that
-provides an empty stub when the module is disabled. The conventions are written down in
-[CLAUDE.md](../CLAUDE.md) under *Module wiring conventions*. For new Channel Sounding behaviour,
+provides an empty stub when the module is disabled. Copy an existing small
+module such as [src/dis/](../src/dis/) or [src/ess/](../src/ess/) as a template, add an
+`add_subdirectory()` line to the top-level [CMakeLists.txt](../CMakeLists.txt) and an
+`rsource` line to the top-level [Kconfig](../Kconfig), and call its `*_init()` from
+[src/main.c](../src/main.c). Include other modules' headers by bare name
+(`#include "cs_shared.h"`, not `"cs/cs_shared.h"`). For new Channel Sounding behaviour,
 start from the NCS samples linked in [section 1](#1-learn-the-basics-first-nordic-tutorials),
 which this project was built from.
 
