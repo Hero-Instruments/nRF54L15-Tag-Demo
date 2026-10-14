@@ -53,7 +53,8 @@ they get closer. This is Bluetooth Channel Sounding: actual distance measurement
 signal-strength guess."*
 
 **Setup at a glance.** Power on both tags. On tag A press the button once (anchor). On
-tag B press twice (seeker). Move them toward and away from each other. A close-range
+tag B press twice (seeker). The seeker stays white until it finds the anchor, which can
+take up to about 30 seconds; this is normal. Move them toward and away from each other. A close-range
 mode can tighten the reaction to a **1–3 foot** span for tabletop demos.
 
 ### 2. Live distance on a screen

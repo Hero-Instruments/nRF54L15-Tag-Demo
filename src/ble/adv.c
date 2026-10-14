@@ -13,6 +13,14 @@
  *   - disconnected + reflector  -> ad_reflector (RANGING + ESS) : CS initiator or phone
  *   - peripheral connected      -> off (slot in use); resumes on disconnect
  *
+ * With CONFIG_APP_ADV_IBEACON the two connectable payloads above alternate
+ * with a standard Apple iBeacon frame (non-connectable, identity address) every
+ * CONFIG_APP_ADV_IBEACON_PERIOD_S seconds: a free-running toggle flips
+ * `beacon_phase` and queues a reconcile, so the beacon is just a third variant
+ * of the same state machine and inherits its self-healing. While the beacon
+ * phase is active the tag is NOT connectable and a RAS initiator will not see
+ * the Ranging UUID; both resume on the next flip.
+ *
  * Three rules keep this from wedging with the radio silent. The previous
  * version trusted a software mirror (`current`) of the radio state and skipped
  * the reconcile whenever it already matched; any desync, or any single failed
@@ -82,15 +90,58 @@ static const struct bt_data ad_reflector[] = {
 		sizeof(CONFIG_BT_DEVICE_NAME) - 1),
 };
 
+#if IS_ENABLED(CONFIG_APP_ADV_IBEACON)
+/* iBeacon proximity UUID, transmitted MSB first as printed:
+ * 8E0D7FCC-A822-4ECD-8C9D-397E9CF62EB4
+ */
+#define IBEACON_UUID                                                           \
+	0x8E, 0x0D, 0x7F, 0xCC, 0xA8, 0x22, 0x4E, 0xCD,                        \
+	0x8C, 0x9D, 0x39, 0x7E, 0x9C, 0xF6, 0x2E, 0xB4
+
+/* Apple iBeacon frame: Flags + 25-byte manufacturer-specific block
+ * (company 0x004C LE, type 0x02, length 0x15, UUID, major, minor, RSSI@1m).
+ * 30 of the 31 legacy bytes — no room for the name, which is why the
+ * connectable variants are kept separate instead of merged.
+ */
+static const struct bt_data ad_ibeacon[] = {
+	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
+	BT_DATA_BYTES(BT_DATA_MANUFACTURER_DATA,
+		      0x4C, 0x00, /* Apple, Inc. */
+		      0x02, 0x15, /* iBeacon, 21 bytes follow */
+		      IBEACON_UUID,
+		      (CONFIG_APP_ADV_IBEACON_MAJOR >> 8) & 0xFF,
+		      CONFIG_APP_ADV_IBEACON_MAJOR & 0xFF,
+		      (CONFIG_APP_ADV_IBEACON_MINOR >> 8) & 0xFF,
+		      CONFIG_APP_ADV_IBEACON_MINOR & 0xFF,
+		      (uint8_t)(int8_t)CONFIG_APP_ADV_IBEACON_RSSI_1M),
+};
+#endif /* CONFIG_APP_ADV_IBEACON */
+
+/* File-scope copies of the stock parameter sets. The BT_LE_ADV_* helpers are
+ * compound literals scoped to the block they appear in, so they must not be
+ * picked via a pointer inside a switch and used after it.
+ */
+static const struct bt_le_adv_param param_conn = BT_LE_ADV_PARAM_INIT(
+	BT_LE_ADV_OPT_CONN, BT_GAP_ADV_FAST_INT_MIN_2, BT_GAP_ADV_FAST_INT_MAX_2,
+	NULL);
+#if IS_ENABLED(CONFIG_APP_ADV_IBEACON)
+static const struct bt_le_adv_param param_ibeacon = BT_LE_ADV_PARAM_INIT(
+	BT_LE_ADV_OPT_USE_IDENTITY, BT_GAP_ADV_FAST_INT_MIN_2,
+	BT_GAP_ADV_FAST_INT_MAX_2, NULL);
+#endif
+
 enum adv_variant {
 	ADV_OFF,
 	ADV_IDLE,
 	ADV_REFLECTOR,
+	ADV_IBEACON,
 };
 
 static const char *variant_str(enum adv_variant v)
 {
 	switch (v) {
+	case ADV_IBEACON:
+		return "ibeacon";
 	case ADV_REFLECTOR:
 		return "reflector";
 	case ADV_IDLE:
@@ -112,10 +163,36 @@ static uint32_t retry_count;
  */
 static atomic_t adv_dirty = ATOMIC_INIT(0);
 
+#if IS_ENABLED(CONFIG_APP_ADV_IBEACON)
+/* Flipped by ibeacon_toggle() on the system workqueue (same context as the
+ * reconcile), so no lock. Starts false: boot into the connectable payload.
+ */
+static bool beacon_phase;
+
+static void ibeacon_toggle(struct k_work *work);
+static K_WORK_DELAYABLE_DEFINE(ibeacon_toggle_work, ibeacon_toggle);
+
+static void ibeacon_toggle(struct k_work *work)
+{
+	ARG_UNUSED(work);
+
+	beacon_phase = !beacon_phase;
+	LOG_INF("adv phase: %s", beacon_phase ? "ibeacon" : "connectable");
+	adv_refresh();
+	k_work_reschedule(&ibeacon_toggle_work,
+			  K_SECONDS(CONFIG_APP_ADV_IBEACON_PERIOD_S));
+}
+#else
+#define beacon_phase false
+#endif /* CONFIG_APP_ADV_IBEACON */
+
 static enum adv_variant desired_variant(void)
 {
 	if (ble_peripheral_conn()) {
 		return ADV_OFF; /* peripheral slot in use (screen/phone/SMP host) */
+	}
+	if (beacon_phase) {
+		return ADV_IBEACON; /* non-connectable beacon half of the cycle */
 	}
 	if (cs_is_running() && cs_get_role() == CS_ROLE_REFLECTOR) {
 		return ADV_REFLECTOR; /* advertise Ranging UUID for the initiator */
@@ -172,11 +249,31 @@ static void adv_reconcile(struct k_work *work)
 	}
 
 	if (want != ADV_OFF) {
-		const struct bt_data *ad =
-			(want == ADV_REFLECTOR) ? ad_reflector : ad_idle;
-		size_t len = (want == ADV_REFLECTOR) ? ARRAY_SIZE(ad_reflector)
-						     : ARRAY_SIZE(ad_idle);
-		int err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_2, ad, len, NULL, 0);
+		const struct bt_le_adv_param *param = &param_conn;
+		const struct bt_data *ad = ad_idle;
+		size_t len = ARRAY_SIZE(ad_idle);
+
+		switch (want) {
+		case ADV_REFLECTOR:
+			ad = ad_reflector;
+			len = ARRAY_SIZE(ad_reflector);
+			break;
+#if IS_ENABLED(CONFIG_APP_ADV_IBEACON)
+		case ADV_IBEACON:
+			/* Non-connectable, but on the identity address so a
+			 * scanner sees one device alternating payloads rather
+			 * than a second, random-address beacon.
+			 */
+			param = &param_ibeacon;
+			ad = ad_ibeacon;
+			len = ARRAY_SIZE(ad_ibeacon);
+			break;
+#endif
+		default:
+			break;
+		}
+
+		int err = bt_le_adv_start(param, ad, len, NULL, 0);
 
 		if (!err) {
 			current = want;
@@ -249,6 +346,10 @@ BT_CONN_CB_DEFINE(adv_conn_cbs) = {
 
 int adv_init(void)
 {
+#if IS_ENABLED(CONFIG_APP_ADV_IBEACON)
+	k_work_schedule(&ibeacon_toggle_work,
+			K_SECONDS(CONFIG_APP_ADV_IBEACON_PERIOD_S));
+#endif
 	adv_refresh();
 	return 0;
 }

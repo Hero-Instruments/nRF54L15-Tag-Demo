@@ -69,7 +69,7 @@ module under `src/` with its own `CMakeLists.txt` and `Kconfig`, toggled by a
 | Path | Symbol | Responsibility |
 |------|--------|----------------|
 | `src/sensors/` | `APP_SENSORS` | Sensor sampling/logging, runtime ODR/range, high-rate IMU stream queue, stationarity signal |
-| `src/ble/` | `APP_BLE_CORE` / `APP_ADV` | BLE stack enable, connection & security callbacks, role-aware **dual-connection** tracking (central CS link + peripheral host link), and the role-independent connectable **advertiser** (`adv.c`) |
+| `src/ble/` | `APP_BLE_CORE` / `APP_ADV` | BLE stack enable, connection & security callbacks, role-aware **dual-connection** tracking (central CS link + peripheral host link), and the role-independent connectable **advertiser** (`adv.c`), which alternates every 30 s with a non-connectable **iBeacon** frame (`APP_ADV_IBEACON`, UUID `8E0D7FCC-A822-4ECD-8C9D-397E9CF62EB4`) |
 | `src/cs/` | `APP_CS` | Channel Sounding: shared state machine, initiator, reflector, distance filtering |
 | `src/ess/` | `APP_ESS` | Environmental Sensing Service (GATT server) |
 | `src/dis/` | `APP_DIS` | Device Information Service serial number (the service itself is Zephyr's `CONFIG_BT_DIS`) |
@@ -201,6 +201,14 @@ to reconfigure the IMU at runtime.
 ### Device Information Service (DIS)
 Connect and read the standard DIS characteristics (`0x180A`) — no app-specific
 knowledge needed, any generic BLE client shows them:
+>
+> Every 30 s (`CONFIG_APP_ADV_IBEACON_PERIOD_S`) the advertiser swaps that
+> connectable payload for a standard **iBeacon** frame — Apple company ID
+> `0x004C`, proximity UUID `8E0D7FCC-A822-4ECD-8C9D-397E9CF62EB4`, major/minor
+> `0x0001`/`0x0001`, measured power −59 dBm (all but the UUID are Kconfig) — sent
+> non-connectable on the same identity address. During that half of the cycle the
+> tag cannot be connected to and a RAS initiator will not find it; both resume on
+> the next flip. Set `CONFIG_APP_ADV_IBEACON=n` to advertise connectable only.
 
 | Characteristic | UUID | Value |
 |---|---|---|
@@ -282,13 +290,14 @@ cycle **Off → Reflector → Initiator**:
   ≈ 120 ms at contact to `APP_UX_BLINK_SLOW_MS` ≈ 1200 ms at the far threshold,
   i.e. ~8 Hz up close → ~0.8 Hz far).
 
-Default zones are `< 1 m` / `1–3 m` / `≥ 3 m`. Set **`APP_UX_SHORT_DEMO=y`** to
-remap them to a close-range **1 ft / 3 ft** span (green `< 1 ft`, yellow `1–3 ft`,
+The Kconfig default zones are `< 1 m` / `1–3 m` / `≥ 3 m`. **`APP_UX_SHORT_DEMO=y`**
+(set in [prj.conf](prj.conf), so it is on in this build) remaps them to a close-range **1 ft / 3 ft** span (green `< 1 ft`, yellow `1–3 ft`,
 red `> 3 ft`); because the blink is far-relative it becomes markedly more reactive
 across that short range.
 
 Set one tag to Reflector and the other to Initiator; the initiator connects and
-starts ranging automatically.
+starts ranging automatically. It can take up to ~30 s, because the reflector is not
+discoverable during its iBeacon half-cycle (`APP_ADV_IBEACON`).
 
 ### Distance calibration & accelerometer stabilization
 - A static offset (`APP_CS_DISTANCE_OFFSET_MM`, default −1610 mm) is added to every
@@ -448,7 +457,7 @@ Each module is enabled by its `CONFIG_APP_*` symbol; key tunables:
 | `APP_SENSORS_STATIONARY_RATE_HZ` / `_WINDOW` / `_THRESH_MMS2` | 25 / 25 / 300 | Stationarity detector |
 | `APP_MOTION_CONN_INTERVAL_MIN/MAX` | 6 (7.5 ms) | Requested motion-stream connection interval |
 | `APP_CS_SHORT_INTERVAL` / `APP_CS_SHORT_INTERVAL_US` | y / 3750 | Initiator requests a sub-7.5 ms SCI interval (needs `BT_SHORTER_CONNECTION_INTERVALS`) |
-| `APP_UX_SHORT_DEMO` | n | Remap LED zones to a reactive 1 ft / 3 ft range |
+| `APP_UX_SHORT_DEMO` | n (`y` in `prj.conf`) | Remap LED zones to a reactive 1 ft / 3 ft range |
 | `APP_UX_NEAR_MM` / `APP_UX_FAR_MM` | 1000 / 3000 (305 / 914 if short-demo) | LED distance color thresholds (green/yellow/red) |
 | `APP_UX_BLINK_FAST_MS` / `APP_UX_BLINK_SLOW_MS` | 120 / 1200 | Blink period at contact / at the far threshold (interpolated) |
 | `BT_MAX_CONN` | 2 | Central CS link + peripheral host link simultaneously |

@@ -14,3 +14,41 @@ config APP_ADV
 	  Owns the single connectable advertiser so the tag is discoverable for
 	  the phone-facing services (ESS/Motion/SMP) whenever idle or acting as a
 	  reflector, not only during CS ranging.
+
+config APP_ADV_IBEACON
+	bool "Alternate connectable advertising with an iBeacon frame"
+	default y
+	depends on APP_ADV
+	help
+	  Every APP_ADV_IBEACON_PERIOD_S seconds switch the advertiser between
+	  the connectable (ESS/Ranging + name) payload and a standard Apple
+	  iBeacon frame (non-connectable, identity address). The tag cannot be
+	  connected to, and a RAS initiator cannot find it, during the beacon
+	  half of the cycle.
+
+if APP_ADV_IBEACON
+
+config APP_ADV_IBEACON_PERIOD_S
+	int "Seconds spent in each advertising format"
+	default 30
+	range 1 3600
+
+config APP_ADV_IBEACON_MAJOR
+	hex "iBeacon major"
+	default 0x0001
+	range 0x0000 0xFFFF
+
+config APP_ADV_IBEACON_MINOR
+	hex "iBeacon minor"
+	default 0x0001
+	range 0x0000 0xFFFF
+
+config APP_ADV_IBEACON_RSSI_1M
+	int "iBeacon measured power (RSSI at 1 m, dBm)"
+	default -59
+	range -128 127
+	help
+	  Calibration byte receivers use to estimate distance. -59 dBm is the
+	  usual starting point for a 0 dBm transmitter; calibrate on hardware.
+
+endif # APP_ADV_IBEACON
