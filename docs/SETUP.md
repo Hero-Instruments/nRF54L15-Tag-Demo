@@ -179,7 +179,16 @@ from step 4. Option B only replaces the SDK source.
 
 ## 6. Build
 
-### In VS Code (using the project's build preset)
+**We recommend building from the nRF Connect extension in VS Code.** The extension uses the
+SDK and toolchain you installed in step 4, so there's no environment to set up. Its
+**Actions** view has one-click Build, Pristine Build, Flash and Debug. It also shows the memory
+report and the sysbuild images (MCUboot and the app) in the sidebar. Every later step in this
+guide gives the extension route first.
+
+Building from a terminal with `west` produces exactly the same output. It's covered
+[further down](#option-2-from-a-terminal) for scripting, CI, or if you prefer the command line.
+
+### Option 1 (recommended): the nRF Connect extension, using the project's build preset
 
 The repo includes a ready-made build configuration, the `build_cli` preset in
 [CMakePresets.json](../CMakePresets.json). Choosing it fills in the board target, the
@@ -209,11 +218,20 @@ The repo includes a ready-made build configuration, the `build_cli` preset in
 See [How to set up a build configuration](https://docs.nordicsemi.com/bundle/nrf-connect-vscode/page/guides/build_config.html)
 in the extension docs for screenshots of this form.
 
-### From a terminal
+**Rebuilding.** You only add the build configuration once. After that, select `build_cli`
+under the application and use the **Actions** view (or the Command Palette's
+**nRF Connect: Build** / **nRF Connect: Pristine Build**):
 
-The toolchain is **not** on your `PATH` by default. The easiest way to get it is to open a
-terminal from the extension (**nRF Connect** panel → *Open terminal*), which sets the
-environment for you. To do it by hand on macOS, export the toolchain environment. Your toolchain
+- **Build** after ordinary source changes (`.c`/`.h` files, `prj.conf`). It's incremental
+  and fast.
+- **Pristine Build** after editing a `CMakeLists.txt`, a `Kconfig` file, a board file or
+  `sysbuild.conf`. It reconfigures the build from scratch instead of reusing the old configuration.
+
+### Option 2: from a terminal
+
+The toolchain is **not** on your `PATH` by default. The easiest way to get it is to run
+**nRF Connect: Start New Terminal** from the VS Code Command Palette, which opens a terminal
+with the toolchain environment already set. To do it by hand on macOS, export the toolchain environment. Your toolchain
 directory name under `/opt/nordic/ncs/toolchains/` will be a different hash:
 
 ```sh
@@ -245,8 +263,13 @@ west build -b nrf54l15tag/nrf54l15/cpuapp -S rtt-console -d build_cli .
 
 ### Check your build
 
-A successful build ends with two memory reports, one per image. Your numbers will differ
-slightly from these:
+**In VS Code:** expand `build_cli` under the application in the **nRF Connect** panel. You
+should see **two images, `mcuboot` and `nRF54L15TagDemo`**. If you see only the app, the build
+directory is stale; see [Troubleshooting](#12-troubleshooting). **nRF Connect: Show Memory
+Report** breaks each image's flash and RAM use down by file and symbol.
+
+**In the build output (either route):** a successful build ends with two memory reports, one
+per image. Your numbers will differ slightly from these:
 
 ```
 Memory region         Used Size  Region Size  %age Used
@@ -255,9 +278,8 @@ Memory region         Used Size  Region Size  %age Used
            FLASH:      458508 B     712560 B     64.35%      <- application
 ```
 
-Then check that **`build_cli/domains.yaml` lists both `mcuboot` and `nRF54L15TagDemo`**. If it
-lists only the app, the build directory is stale; see
-[Troubleshooting](#12-troubleshooting). The useful outputs are:
+From a terminal, the equivalent check is that **`build_cli/domains.yaml` lists both `mcuboot`
+and `nRF54L15TagDemo`**. The useful outputs, all under `build_cli/`, are:
 
 | File | What it's for |
 |------|---------------|
@@ -285,15 +307,18 @@ lists only the app, the build directory is stale; see
 
 ### Flash
 
-- **VS Code:** *Actions* → **Flash**. See
+- **VS Code (recommended):** select `build_cli`, then **Flash** in the **Actions** view. If
+  more than one board is connected, the extension asks which one to use. See
   [How to flash a build configuration](https://docs.nordicsemi.com/bundle/nrf-connect-vscode/page/guides/build_config.html).
+  If you want to wipe the chip first, for example when a tag has unknown firmware on it, use
+  **nRF Connect: Erase and Flash to Board**.
 - **Terminal:** `west flash -d build_cli`
 
 Both write **MCUboot and the app** in the right order (MCUboot at `0x0`, app at `0x10000`).
 
 > Don't flash `zephyr.signed.bin`, `zephyr.elf` or `mcuboot.hex` on their own with a J-Link
 > tool. The app needs MCUboot underneath it. If you're using a programming tool other than
-> `west flash`, use the merged hex (or the `factory.hex` from a GitHub Release).
+> the extension's Flash action or `west flash`, use the merged hex (or the `factory.hex` from a GitHub Release).
 
 ---
 
@@ -301,8 +326,8 @@ Both write **MCUboot and the app** in the right order (MCUboot at `0x0`, app at 
 
 All logs and the interactive shell run over RTT, through the same DK debugger connection.
 
-**In VS Code:** in the **Connected Devices** view, expand the DK and click the RTT (terminal)
-icon. See [How to connect using RTT](https://docs.nordicsemi.com/bundle/nrf-connect-vscode/page/guides/bd_work_with_boards.html).
+**In VS Code (recommended):** in the **Connected Devices** view, expand the DK and click the
+RTT (terminal) icon, or run **nRF Connect: Connect to RTT** from the Command Palette. See [How to connect using RTT](https://docs.nordicsemi.com/bundle/nrf-connect-vscode/page/guides/bd_work_with_boards.html).
 
 **Or with J-Link RTT Viewer** (installed with J-Link Software):
 
@@ -393,7 +418,7 @@ CONFIG_APP_UX_SHORT_DEMO=y
 ```
 
 That sets the LED's distance zones to 1–3 ft. Change it to `n` to get the default
-1 m / 3 m zones, then rebuild and flash. The option is defined, with help text, in
+1 m / 3 m zones, then click **Build** and **Flash** in the extension's **Actions** view. The option is defined, with help text, in
 [src/ux/Kconfig](../src/ux/Kconfig). Every `CONFIG_APP_*` option is defined the same way in its
 own module's Kconfig file.
 
@@ -408,7 +433,7 @@ To browse every option interactively instead of editing files:
 
 ### A code change
 
-In [src/main.c](../src/main.c), change the `"nRF54L15 Tag Demo ready"` log message, rebuild
+In [src/main.c](../src/main.c), change the `"nRF54L15 Tag Demo ready"` log message, click **Build**
 (an ordinary incremental build is fine for `.c` changes), flash, and look for your text in the
 RTT output.
 
@@ -431,10 +456,10 @@ which this project was built from.
 
 | Symptom | Likely cause and fix |
 |---------|----------------------|
-| `west: command not found` | The toolchain isn't on your `PATH`. Use the extension's terminal or export the environment shown in [section 6](#from-a-terminal). |
+| `west: command not found` | The toolchain isn't on your `PATH`. Build from the extension instead, open a terminal with **nRF Connect: Start New Terminal**, or export the environment shown in [section 6](#option-2-from-a-terminal). |
 | Board `nrf54l15tag/nrf54l15/cpuapp` not found | Wrong SDK version. The Tag board is part of NCS v3.4.0's Zephyr. Check that the build configuration uses SDK **v3.4.0**. |
-| `west build: error: argument -p/--pristine: invalid choice` | A bare `-p` swallowed the next argument. Use `-p always`. |
-| Flash "succeeds" but the tag is dead: no LED, no button response, silent RTT | **Stale build directory.** A build directory created before MCUboot was added to the project keeps producing a single app image with no bootloader. Delete it (`rm -rf build` / `build_cli`) and rebuild. Check that `domains.yaml` lists `mcuboot`. |
+| `west build: error: argument -p/--pristine: invalid choice` | A bare `-p` swallowed the next argument. Use `-p always`, or use **Pristine Build** in the extension. |
+| Flash "succeeds" but the tag is dead: no LED, no button response, silent RTT | **Stale build directory.** A build directory created before MCUboot was added to the project keeps producing a single app image with no bootloader. **In VS Code:** right-click the build configuration → **Remove Build Configuration**, delete its folder, then add it again from the preset ([section 6](#6-build)). **From a terminal:** `rm -rf build_cli` and rebuild. Either way, check that both `mcuboot` and `nRF54L15TagDemo` are listed afterwards. |
 | Flash fails: no J-Link / no device found | Is the DK on USB and switched on? Is the Tag fully seated in **DEBUG OUT** and powered (coin cell or VDD jumper)? Check that `nrfutil device list` shows the DK, and update J-Link Software if the nRF54L15 isn't recognised. |
 | RTT connects but shows nothing | The build is missing the `rtt-console` snippet (check the build configuration), or the tag isn't running; see the stale-build row above. Try resetting the tag while the RTT viewer is connected. |
 | Phone can't find or connect to the tag | Wait up to 30 s; the tag is non-connectable during its iBeacon half-cycle. It also stops advertising while a phone or host is already connected to it. |

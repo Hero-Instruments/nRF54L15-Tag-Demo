@@ -91,27 +91,44 @@ Motion (`MOTION_SERVICE.md`) and Throughput (`THROUGHPUT_SERVICE.md`) services.
 > [Developer Setup Guide](docs/SETUP.md). It covers installing the tools, building,
 > flashing and RTT, and links to Nordic's tutorials.
 
-Built with the **nRF Connect for VS Code** extension (NCS v3.4.0): board target
-`nrf54l15tag/nrf54l15/cpuapp` with the **`rtt-console`** snippet enabled (all
-console/log/shell I/O is over SEGGER RTT — open an RTT terminal to interact).
+**Recommended: build from the nRF Connect for VS Code extension** (NCS v3.4.0).
+In the nRF Connect panel choose **Add build configuration**, then pick the
+**`build_cli`** entry from the **CMake Preset** drop-down
+([CMakePresets.json](CMakePresets.json)). It sets board target
+`nrf54l15tag/nrf54l15/cpuapp`, the **`rtt-console`** snippet (all
+console/log/shell I/O is over SEGGER RTT — open an RTT terminal to interact) and
+the `build_cli/` directory. Set SDK and toolchain to v3.4.0, then use **Build**,
+**Pristine Build** and **Flash** from the Actions view.
+
+From a terminal with the toolchain environment loaded, the equivalent is:
+
+```sh
+west build -b nrf54l15tag/nrf54l15/cpuapp -S rtt-console -d build_cli .
+west flash -d build_cli
+```
+
 Build output directories (`build*/`) are gitignored.
 
 This is a **sysbuild** build producing two images — MCUboot and the signed
 application (see [Firmware update over BLE (OTA)](#firmware-update-over-ble-ota)).
-`west flash` programs both; `merged_nrf54l15tag_nrf54l15_cpuapp.hex` in the build
+The extension's **Flash** action (or `west flash`) programs both; `merged_nrf54l15tag_nrf54l15_cpuapp.hex` in the build
 directory is the equivalent single-file image.
 
 > **A build directory created before MCUboot was added must be rebuilt pristine.**
 > Sysbuild cannot add a second image to an existing build tree incrementally, so
-> `rm -rf build` (or `--pristine`) is required once. Until you do, that directory
+> it must be rebuilt from scratch once: in VS Code, remove the build configuration,
+> delete its folder and add it again; from a terminal, `rm -rf build` (or
+> `-p always`). Until you do, that directory
 > still holds a single, pre-MCUboot application — and flashing it reports success
 > while leaving the tag running old firmware or nothing at all (no LED, no button
-> response, silent RTT). Check `build/domains.yaml`: it must list **both**
-> `mcuboot` and `nRF54L15TagDemo`.
+> response, silent RTT). Check that **both** `mcuboot` and `nRF54L15TagDemo` are
+> listed, either under the build configuration in the nRF Connect panel or in the
+> build directory's `domains.yaml`.
 >
 > For the same reason, never flash `zephyr.signed.bin`, the standalone
 > `mcuboot.hex`, or the `.elf` on their own over J-Link — the application links at
-> `0x10000` and needs MCUboot at `0x0` beneath it. Use `west flash`, or the
+> `0x10000` and needs MCUboot at `0x0` beneath it. Use the extension's **Flash**
+> action or `west flash`, or the
 > `factory.hex` release asset.
 
 ### Workspace setup (west)
