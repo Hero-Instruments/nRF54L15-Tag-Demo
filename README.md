@@ -87,6 +87,10 @@ Motion (`MOTION_SERVICE.md`) and Throughput (`THROUGHPUT_SERVICE.md`) services.
 
 ## Building
 
+> **New to Zephyr / nRF Connect SDK?** Start with the step-by-step
+> [Developer Setup Guide](docs/SETUP.md). It covers installing the tools, building,
+> flashing and RTT, and links to Nordic's tutorials.
+
 Built with the **nRF Connect for VS Code** extension (NCS v3.4.0): board target
 `nrf54l15tag/nrf54l15/cpuapp` with the **`rtt-console`** snippet enabled (all
 console/log/shell I/O is over SEGGER RTT — open an RTT terminal to interact).
@@ -197,10 +201,6 @@ to reconfigure the IMU at runtime.
 > to the reflector *and* accepts an inbound (peripheral) link from a host, so a
 > phone/screen can read ESS/Motion/SMP and poll `cs distance` while ranging
 > continues. Advertising stops only once that host link is connected.
-
-### Device Information Service (DIS)
-Connect and read the standard DIS characteristics (`0x180A`) — no app-specific
-knowledge needed, any generic BLE client shows them:
 >
 > Every 30 s (`CONFIG_APP_ADV_IBEACON_PERIOD_S`) the advertiser swaps that
 > connectable payload for a standard **iBeacon** frame — Apple company ID
@@ -209,6 +209,10 @@ knowledge needed, any generic BLE client shows them:
 > non-connectable on the same identity address. During that half of the cycle the
 > tag cannot be connected to and a RAS initiator will not find it; both resume on
 > the next flip. Set `CONFIG_APP_ADV_IBEACON=n` to advertise connectable only.
+
+### Device Information Service (DIS)
+Connect and read the standard DIS characteristics (`0x180A`) — no app-specific
+knowledge needed, any generic BLE client shows them:
 
 | Characteristic | UUID | Value |
 |---|---|---|
